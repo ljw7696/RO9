@@ -85,31 +85,40 @@ def compute_impedance(sol, freq_hz):
 def plot_nyquist(result_list):
     fig = go.Figure()
 
-    for result in result_list:
+    marker_symbols = ['circle', 'square', 'diamond', 'cross', 'x', 'triangle-up']
+
+    for i, result in enumerate(result_list):
         Z_list = [compute_impedance(result["solutions"][f], f) * 1000 for f in result["freqs"]]
         label  = result.get("name", f"SOC={result['soc']:.2f} | T={result['T']:.1f}K")
+        symbol = marker_symbols[i // 10]
 
         fig.add_trace(go.Scatter(
-            x    = [z.real for z in Z_list],
-            y    = [-z.imag for z in Z_list],
-            mode = "lines+markers",
-            name = label,
+            x      = [z.real for z in Z_list],
+            y      = [-z.imag for z in Z_list],
+            mode   = "lines+markers",
+            name   = label,
+            marker = dict(symbol=symbol, size=12),
         ))
 
     font_size = 36
     fig.update_layout(
         title  = dict(text="Nyquist Plot", font=dict(size=font_size)),
         xaxis  = dict(
-            title     = dict(text="Re(Z) [mΩ]", font=dict(size=font_size)),
-            tickfont  = dict(size=font_size),
-            range     = [0, 80],
+            title    = dict(text="Re(Z) [mΩ]", font=dict(size=font_size)),
+            tickfont = dict(size=font_size),
+            range    = [0, 100],
         ),
         yaxis  = dict(
             title    = dict(text="-Im(Z) [mΩ]", font=dict(size=font_size)),
             tickfont = dict(size=font_size),
             range    = [0, 55],
         ),
-        legend = dict(x=0.01, y=0.99, font=dict(size=font_size)),
+        legend = dict(
+            x=1.01, y=1,
+            xanchor='left',
+            font=dict(size=font_size),
+        ),
+
         width  = 12 * 96,
         height = 9 * 96,
     )
@@ -188,6 +197,8 @@ def plot_nyquist_filtered(result_list, filter_threshold_a=10.0):
             y    = [-z.imag for z in valid_Z],
             mode = "lines+markers",
             name = label,
+            marker = dict(size=12),
+
         ))
 
     font_size = 36
@@ -203,8 +214,11 @@ def plot_nyquist_filtered(result_list, filter_threshold_a=10.0):
             tickfont = dict(size=font_size),
             range    = [0, 55],
         ),
-        legend = dict(x=0.01, y=0.99, font=dict(size=font_size)),
-        width  = 12 * 96,
+        legend = dict(
+            x=1.01, y=1,
+            xanchor='left',
+            font=dict(size=font_size),
+        ),        width  = 12 * 96,
         height = 9 * 96,
     )
     fig.show()

@@ -50,3 +50,21 @@ def compute_sensitivity(model, parameter_values,
     sensitivity = (V_upper - V_lower) / (2 * perturbation * V_nominal)
 
     return sensitivity, V_nominal
+
+
+def compute_rms_sensitivity(results_sensitivity, freqs, target_params):
+    # S_j^V (RMS)
+    S = {}
+    for freq in freqs:
+        S[freq] = {}
+        for param in target_params:
+            sens = results_sensitivity[freq][param]["sensitivity"]
+            S[freq][param] = np.sqrt(np.mean(sens**2))
+
+    # S̄_j^V (normalized)
+    S_bar = {}
+    for freq in freqs:
+        total = sum(S[freq].values())
+        S_bar[freq] = {param: S[freq][param] / total for param in target_params}
+
+    return S, S_bar
