@@ -11,6 +11,46 @@ DATA_DIR = Path(__file__).resolve().parent / "data"
 
 
 
+
+
+# ============================================================
+# Parameter display labels
+# ============================================================
+PARAM_LABELS = {
+    "Negative electrode exchange-current density [A.m-2]": r"$k^-$",
+    "Positive electrode exchange-current density [A.m-2]": r"$k^+$",
+
+    "Negative electrode double-layer capacity [F.m-2]": r"$C_{dl}^-$",
+    "Positive electrode double-layer capacity [F.m-2]": r"$C_{dl}^+$",
+
+    "Negative electrode active material volume fraction": r"$\varepsilon_s^-$",
+    "Positive electrode active material volume fraction": r"$\varepsilon_s^+$",
+
+    "Cation transference number": r"$t^+$",
+
+    "Electrolyte conductivity [S.m-1]": r"$\kappa$",
+    "Electrolyte diffusivity [m2.s-1]": r"$D_e$",
+
+    "Positive electrode porosity": r"$\varepsilon_e^+$",
+    "Negative electrode porosity": r"$\varepsilon_e^-$",
+    "Separator porosity": r"$\varepsilon_e^{sep}$",
+
+    "Negative electrode thickness [m]": r"$L^-$",
+    "Positive electrode thickness [m]": r"$L^+$",
+    "Separator thickness [m]": r"$L^{sep}$",
+
+    "Negative particle diffusivity [m2.s-1]": r"$D_s^-$",
+    "Positive particle diffusivity [m2.s-1]": r"$D_s^+$",
+
+    "Negative electrode conductivity [S.m-1]": r"$\sigma^-$",
+    "Positive electrode conductivity [S.m-1]": r"$\sigma^+$",
+
+    "Negative particle radius [m]": r"$R_s^-$",
+    "Positive particle radius [m]": r"$R_s^+$",
+}
+
+
+
 ######################################################################
 ###################### SOC Conversion Utilities ######################
 ######################################################################
@@ -212,19 +252,18 @@ def make_experiment(profile_id) -> pybamm.Experiment:
         steps = [(
             "Rest for 10 seconds",
             "Discharge at 1C for 30 seconds",
-            "Rest for 300 seconds",
+            "Rest for 150 seconds",
             "Charge at 1C for 30 seconds",
-            "Rest for 300 seconds",
+            "Rest for 150 seconds",
             "Discharge at C/3 for 540 seconds",
             "Rest for 600 seconds",
             "Charge at C/3 for 540 seconds",
             "Rest for 600 seconds",
         )]
 
-    elif profile_id == "C20_dchg":
+    elif profile_id == "C50_dchg":
         steps = [(
-            "Discharge at C/20 until 2.5 V",
-            "Hold at 2.5 V until C/50",
+            "Discharge at C/50 until 2.5 V",
         )]
 
     elif profile_id in PROFILE_CSV_MAP:
@@ -288,175 +327,6 @@ def run_model(
 
 
 
-
-######################################################################
-###################### Sensitivity Model Setup #######################
-######################################################################
-# ============================================================
-# Exchange-current nominal values
-# ============================================================
-m_ref_neg_nominal = 6.48e-7
-m_ref_pos_nominal = 3.42e-6
-def j0_neg_nominal(c_e, c_s_surf, c_s_max, T):
-    arrh = pybamm.exp(
-        35000 / pybamm.constants.R * (1 / 298.15 - 1 / T)
-    )
-
-    return (
-        m_ref_neg_nominal
-        * arrh
-        * c_e**0.5
-        * c_s_surf**0.5
-        * (c_s_max - c_s_surf) ** 0.5
-    )
-
-
-def j0_pos_nominal(c_e, c_s_surf, c_s_max, T):
-    arrh = pybamm.exp(
-        17800 / pybamm.constants.R * (1 / 298.15 - 1 / T)
-    )
-
-    return (
-        m_ref_pos_nominal
-        * arrh
-        * c_e**0.5
-        * c_s_surf**0.5
-        * (c_s_max - c_s_surf) ** 0.5
-    )
-
-
-
-# ============================================================
-# Modified Parameter Functions for Sensitivity
-# ============================================================
-def j0_neg_input(c_e, c_s_surf, c_s_max, T):
-    m_ref = pybamm.InputParameter(
-        "Negative electrode exchange-current density [A.m-2]"
-    )
-
-    arrh = pybamm.exp(
-        35000 / pybamm.constants.R * (1 / 298.15 - 1 / T)
-    )
-
-    return (
-        m_ref
-        * arrh
-        * c_e**0.5
-        * c_s_surf**0.5
-        * (c_s_max - c_s_surf) ** 0.5
-    )
-
-
-def j0_pos_input(c_e, c_s_surf, c_s_max, T):
-    m_ref = pybamm.InputParameter(
-        "Positive electrode exchange-current density [A.m-2]"
-    )
-
-    arrh = pybamm.exp(
-        17800 / pybamm.constants.R * (1 / 298.15 - 1 / T)
-    )
-
-    return (
-        m_ref
-        * arrh
-        * c_e**0.5
-        * c_s_surf**0.5
-        * (c_s_max - c_s_surf) ** 0.5
-    )
-
-
-
-def prepare_sensitivity_inputs(params, sensitivity_targets, values=None):
-    sensitivity_params = params.copy()
-    theta_values = {}
-
-    special_params = {
-        "Negative electrode exchange-current density [A.m-2]": (
-            j0_neg_input,
-            m_ref_neg_nominal,
-        ),
-        "Positive electrode exchange-current density [A.m-2]": (
-            j0_pos_input,
-            m_ref_pos_nominal,
-        ),
-    }
-
-    for name in sensitivity_targets:
-        if name in special_params:
-            input_function, nominal_val = special_params[name]
-            sensitivity_params[name] = input_function
-        else:
-            val = sensitivity_params[name]
-
-            if callable(val):
-                raise ValueError(
-                    f"{name} is callable. "
-                    "Use sensitivity_ready=True or add special handling."
-                )
-
-            nominal_val = float(val)
-            sensitivity_params.update({name: "[input]"})
-
-        if values is None:
-            theta_values[name] = nominal_val
-        else:
-            theta_values[name] = values[name]
-
-    return sensitivity_params, theta_values
-
-
-
-
-def compute_fim(
-    Sens,
-    params=None,
-    sigma=None,
-):
-    """
-    Compute Fisher Information Matrix
-
-    sigma=None:
-        F = J.T @ J
-
-    sigma=float:
-        F = J.T @ J / sigma**2
-    """
-
-    if params is None:
-        params = [k for k in Sens.keys() if k != "t"]
-
-    J = np.column_stack([
-        np.asarray(Sens[p]).squeeze()
-        for p in params
-    ])
-
-    if sigma is None:
-        F = J.T @ J
-    else:
-        F = (J.T @ J) / sigma**2
-
-    return F
-
-
-
-def fim_diagonal_comparison(F_base, F_new, params):
-    base_diag = np.diag(F_base)
-    new_diag = np.diag(F_new)
-
-    ratio = new_diag / base_diag
-    diff = new_diag - base_diag
-
-    for p, b, n, r, d in zip(params, base_diag, new_diag, ratio, diff):
-        label = PARAM_LABELS.get(p, p)
-        print(f"{label:20s}  base={b:.3e}  new={n:.3e}  ratio={r:.3f}  diff={d:.3e}")
-
-
-
-
-
-######################################################################
-###################### Results Visualization #######################
-######################################################################
 def get_t_query(sol, dt=1.0):
     """
     Create uniform query time vector from solution.
@@ -578,6 +448,225 @@ def get_sensitivities(
 
 
 
+
+######################################################################
+###################### Sensitivity Analysis #######################
+######################################################################
+# ============================================================
+# Exchange-current nominal values
+# ============================================================
+m_ref_neg_nominal = 6.48e-7
+m_ref_pos_nominal = 3.42e-6
+def j0_neg_nominal(c_e, c_s_surf, c_s_max, T):
+    arrh = pybamm.exp(
+        35000 / pybamm.constants.R * (1 / 298.15 - 1 / T)
+    )
+
+    return (
+        m_ref_neg_nominal
+        * arrh
+        * c_e**0.5
+        * c_s_surf**0.5
+        * (c_s_max - c_s_surf) ** 0.5
+    )
+
+
+def j0_pos_nominal(c_e, c_s_surf, c_s_max, T):
+    arrh = pybamm.exp(
+        17800 / pybamm.constants.R * (1 / 298.15 - 1 / T)
+    )
+
+    return (
+        m_ref_pos_nominal
+        * arrh
+        * c_e**0.5
+        * c_s_surf**0.5
+        * (c_s_max - c_s_surf) ** 0.5
+    )
+
+
+
+# ============================================================
+# Modified Parameter Functions for Sensitivity
+# ============================================================
+def j0_neg_input(c_e, c_s_surf, c_s_max, T):
+    m_ref = pybamm.InputParameter(
+        "Negative electrode exchange-current density [A.m-2]"
+    )
+
+    arrh = pybamm.exp(
+        35000 / pybamm.constants.R * (1 / 298.15 - 1 / T)
+    )
+
+    return (
+        m_ref
+        * arrh
+        * c_e**0.5
+        * c_s_surf**0.5
+        * (c_s_max - c_s_surf) ** 0.5
+    )
+
+
+def j0_pos_input(c_e, c_s_surf, c_s_max, T):
+    m_ref = pybamm.InputParameter(
+        "Positive electrode exchange-current density [A.m-2]"
+    )
+
+    arrh = pybamm.exp(
+        17800 / pybamm.constants.R * (1 / 298.15 - 1 / T)
+    )
+
+    return (
+        m_ref
+        * arrh
+        * c_e**0.5
+        * c_s_surf**0.5
+        * (c_s_max - c_s_surf) ** 0.5
+    )
+
+
+
+def prepare_sensitivity_inputs(params, sensitivity_targets, values=None):
+    sensitivity_params = params.copy()
+    theta_values = {}
+
+    special_params = {
+        "Negative electrode exchange-current density [A.m-2]": (
+            j0_neg_input,
+            m_ref_neg_nominal,
+        ),
+        "Positive electrode exchange-current density [A.m-2]": (
+            j0_pos_input,
+            m_ref_pos_nominal,
+        ),
+    }
+
+    for name in sensitivity_targets:
+        if name in special_params:
+            input_function, nominal_val = special_params[name]
+            sensitivity_params[name] = input_function
+        else:
+            val = sensitivity_params[name]
+
+            if callable(val):
+                raise ValueError(
+                    f"{name} is callable. "
+                    "Use sensitivity_ready=True or add special handling."
+                )
+
+            nominal_val = float(val)
+            sensitivity_params.update({name: "[input]"})
+
+        if values is None:
+            theta_values[name] = nominal_val
+        else:
+            theta_values[name] = values[name]
+
+    return sensitivity_params, theta_values
+
+
+
+def print_relative_sensitivity(
+    Sens,
+    params=None,
+    title=None,
+):
+    """
+    Relative sensitivity based on RMS
+
+    rel_i = RMS_i / sum(RMS)
+
+    Sum(rel_i) = 1
+    """
+
+    if params is None:
+        params = [k for k in Sens.keys() if k != "t"]
+
+    rms = {}
+
+    for p in params:
+        s = np.asarray(Sens[p]).squeeze()
+        rms[p] = np.sqrt(np.mean(s**2))
+
+    total = sum(rms.values())
+
+    rel = {
+        p: rms[p] / total
+        for p in params
+    }
+
+    if title is not None:
+        print("\n" + "=" * 80)
+        print(title)
+        print("=" * 80)
+
+    print(
+        "Parameter".ljust(25),
+        "RMS".rjust(12),
+        "Relative".rjust(12),
+    )
+
+    for p, val in sorted(
+        rel.items(),
+        key=lambda x: x[1],
+        reverse=True,
+    ):
+        print(
+            f"{PARAM_LABELS.get(p,p):25s}"
+            f"{rms[p]:12.3e}"
+            f"{100*val:11.2f}%"
+        )
+
+    return rel
+
+
+
+def compute_fim(
+    Sens,
+    params=None,
+    sigma=None,
+):
+    """
+    Compute Fisher Information Matrix
+
+    sigma=None:
+        F = J.T @ J
+
+    sigma=float:
+        F = J.T @ J / sigma**2
+    """
+
+    if params is None:
+        params = [k for k in Sens.keys() if k != "t"]
+
+    J = np.column_stack([
+        np.asarray(Sens[p]).squeeze()
+        for p in params
+    ])
+
+    if sigma is None:
+        F = J.T @ J
+    else:
+        F = (J.T @ J) / sigma**2
+
+    return F
+
+
+
+def fim_diagonal_comparison(F_base, F_new, params):
+    base_diag = np.diag(F_base)
+    new_diag = np.diag(F_new)
+
+    ratio = new_diag / base_diag
+    diff = new_diag - base_diag
+
+    for p, b, n, r, d in zip(params, base_diag, new_diag, ratio, diff):
+        label = PARAM_LABELS.get(p, p)
+        print(f"{label:20s}  base={b:.3e}  new={n:.3e}  ratio={r:.3f}  diff={d:.3e}")
+
+
+
+
 def scale_voltage_sens_by_ocv(
     sensitivities,
     parameter_values,
@@ -641,6 +730,297 @@ def concentrations_to_soc_sensitivities(
 
 
 
+
+def sensitivity_ranking(Sens, params):
+    rows = []
+
+    for p in params:
+        s = np.asarray(Sens[p]).squeeze()
+        rms = np.sqrt(np.mean(s**2))
+        peak = np.max(np.abs(s))
+
+        rows.append((p, rms, peak))
+
+    rows.sort(key=lambda x: x[1], reverse=True)
+
+    return rows
+
+
+def print_sensitivity_ranking(profile_id, Sens, title, params, top_n=None):
+    print("\n" + "-" * 80)
+    print(f"{profile_id} | {title}")
+    print("-" * 80)
+
+    rows = sensitivity_ranking(Sens, params)
+
+    if top_n is not None:
+        rows = rows[:top_n]
+
+    print("Parameter".ljust(25), "RMS".rjust(12), "Peak".rjust(12))
+
+    for p, rms, peak in rows:
+        print(
+            f"{PARAM_LABELS.get(p,p):25s}"
+            f"{rms:12.3e}"
+            f"{peak:12.3e}"
+        )
+
+
+
+
+def run_perturbed_profiles_single_update(
+    name,
+    initial_soc,
+    experiment,
+    theta_values_nominal,
+    model_options,
+    frac=0.01,
+):
+    base_numeric = make_base_params(
+        "Chen2020",
+        soc=initial_soc,
+        sensitivity_ready=False,
+    )
+
+    nominal_val = float(theta_values_nominal[name])
+
+    def solve_with_value(val):
+        p = base_numeric.copy()
+        p.update({name: val})
+
+        model_fd = make_model(
+            "SPMe",
+            options=model_options,
+        )
+
+        sol = run_model(
+            model_fd,
+            p,
+            experiment,
+        )
+
+        return {
+            "t": sol["Time [s]"].entries,
+            "V": sol["Voltage [V]"].entries,
+            "csn_avg": sol["Average negative particle concentration [mol.m-3]"].entries,
+            "csp_avg": sol["Average positive particle concentration [mol.m-3]"].entries,
+        }
+
+    return {
+        "nominal": solve_with_value(nominal_val),
+        "lower": solve_with_value(nominal_val * (1.0 - frac)),
+        "upper": solve_with_value(nominal_val * (1.0 + frac)),
+    }
+
+
+
+# %% FD sensitivities using single-parameter update
+
+# def compute_fd_sensitivity_single_update(
+#     sensitivity_targets,
+#     initial_soc,
+#     experiment,
+#     theta_values_nominal,
+#     model_options,
+#     endpoints,
+#     V_span,
+#     frac=0.01,
+# ):
+#     Sens_V_fd = {"t": None}
+#     Sens_soc_n_fd = {"t": None}
+#     Sens_soc_p_fd = {"t": None}
+
+#     for name in sensitivity_targets:
+#         print(name)
+
+#         profiles = run_perturbed_profiles_single_update(
+#             name=name,
+#             initial_soc=initial_soc,
+#             experiment=experiment,
+#             theta_values_nominal=theta_values_nominal,
+#             model_options=model_options,
+#             frac=frac,
+#         )
+
+#         t_low = profiles["lower"]["t"]
+#         t_up = profiles["upper"]["t"]
+
+#         t_end = min(t_low[-1], t_up[-1])
+#         t_common = profiles["nominal"]["t"][profiles["nominal"]["t"] <= t_end]
+
+#         if Sens_V_fd["t"] is None:
+#             Sens_V_fd["t"] = t_common
+#             Sens_soc_n_fd["t"] = t_common
+#             Sens_soc_p_fd["t"] = t_common
+
+#         def interp_case(case, key):
+#             return interp1d(
+#                 profiles[case]["t"],
+#                 profiles[case][key],
+#                 bounds_error=False,
+#                 fill_value=np.nan,
+#             )(t_common)
+
+#         V_low = interp_case("lower", "V")
+#         V_up = interp_case("upper", "V")
+
+#         csn_low = interp_case("lower", "csn_avg")
+#         csn_up = interp_case("upper", "csn_avg")
+
+#         csp_low = interp_case("lower", "csp_avg")
+#         csp_up = interp_case("upper", "csp_avg")
+
+#         S_V = (V_up - V_low) / (2.0 * frac)
+#         S_csn = (csn_up - csn_low) / (2.0 * frac)
+#         S_csp = (csp_up - csp_low) / (2.0 * frac)
+
+#         csn_span = endpoints["csn_100"] - endpoints["csn_0"]
+#         csp_span = endpoints["csp_0"] - endpoints["csp_100"]
+
+#         Sens_V_fd[name] = S_V / V_span
+#         Sens_soc_n_fd[name] = S_csn / csn_span
+#         Sens_soc_p_fd[name] = -S_csp / csp_span
+
+#         print(
+#             f"{PARAM_LABELS.get(name, name):25s}"
+#             f" t_end={t_end:8.1f}"
+#         )
+
+#     return Sens_V_fd, Sens_soc_n_fd, Sens_soc_p_fd
+
+
+def compute_fd_sensitivity_single_update_fast(
+    sensitivity_targets,
+    initial_soc,
+    experiment,
+    theta_values_nominal,
+    model_options,
+    endpoints,
+    V_span,
+    frac=0.01,
+):
+    base_numeric = make_base_params(
+        "Chen2020",
+        soc=initial_soc,
+        sensitivity_ready=False,
+    )
+
+    model_nom = make_model("SPMe", options=model_options)
+    sol_nom = run_model(model_nom, base_numeric, experiment)
+
+    t_ref = sol_nom["Time [s]"].entries
+
+    Sens_V_fd = {"t": t_ref}
+    Sens_soc_n_fd = {"t": t_ref}
+    Sens_soc_p_fd = {"t": t_ref}
+
+    csn_span = endpoints["csn_100"] - endpoints["csn_0"]
+    csp_span = endpoints["csp_0"] - endpoints["csp_100"]
+
+    def solve_with_param(name, val):
+        p = base_numeric.copy()
+        p.update({name: val})
+
+        model_fd = make_model("SPMe", options=model_options)
+        sol = run_model(model_fd, p, experiment)
+
+        return {
+            "t": sol["Time [s]"].entries,
+            "V": sol["Voltage [V]"].entries,
+            "csn_avg": sol["Average negative particle concentration [mol.m-3]"].entries,
+            "csp_avg": sol["Average positive particle concentration [mol.m-3]"].entries,
+        }
+
+    def interp_to_ref(profile, key):
+        return interp1d(
+            profile["t"],
+            profile[key],
+            bounds_error=False,
+            fill_value="extrapolate",
+        )(t_ref)
+
+    for name in sensitivity_targets:
+        print("FD:", PARAM_LABELS.get(name, name))
+
+        nominal_val = float(theta_values_nominal[name])
+
+        low = solve_with_param(name, nominal_val * (1.0 - frac))
+        up = solve_with_param(name, nominal_val * (1.0 + frac))
+
+        print(
+            "  t_end low/up/ref:",
+            low["t"][-1],
+            up["t"][-1],
+            t_ref[-1],
+        )
+
+        V_low = interp_to_ref(low, "V")
+        V_up = interp_to_ref(up, "V")
+
+        csn_low = interp_to_ref(low, "csn_avg")
+        csn_up = interp_to_ref(up, "csn_avg")
+
+        csp_low = interp_to_ref(low, "csp_avg")
+        csp_up = interp_to_ref(up, "csp_avg")
+
+        S_V = (V_up - V_low) / (2.0 * frac)
+        S_csn = (csn_up - csn_low) / (2.0 * frac)
+        S_csp = (csp_up - csp_low) / (2.0 * frac)
+
+        Sens_V_fd[name] = S_V / V_span
+        Sens_soc_n_fd[name] = S_csn / csn_span
+        Sens_soc_p_fd[name] = -S_csp / csp_span
+
+    return Sens_V_fd, Sens_soc_n_fd, Sens_soc_p_fd
+
+
+
+def plot_perturbed_profiles(
+    profiles,
+    name,
+):
+    label = PARAM_LABELS.get(name, name)
+
+    fig, axes = plt.subplots(
+        1,
+        3,
+        figsize=(15, 4),
+    )
+
+    plot_info = [
+        ("V", "Voltage [V]"),
+        ("csn_avg", "Average csn [mol m-3]"),
+        ("csp_avg", "Average csp [mol m-3]"),
+    ]
+
+    for ax, (key, ylabel) in zip(axes, plot_info):
+        for case, style in [
+            ("nominal", "-"),
+            ("lower", "--"),
+            ("upper", "--"),
+        ]:
+            ax.plot(
+                profiles[case]["t"],
+                profiles[case][key],
+                style,
+                label=case,
+            )
+
+        ax.set_xlabel("Time [s]")
+        ax.set_ylabel(ylabel)
+        ax.set_title(key)
+        ax.grid(True, alpha=0.4)
+
+    axes[0].legend()
+
+    fig.suptitle(label)
+    plt.tight_layout(rect=[0, 0, 1, 0.93])
+    plt.show()
+
+
+######################################################################
+###################### Results Visualization #######################
+######################################################################
 def plot_results(
     results,
     kind=None,
@@ -720,14 +1100,13 @@ def plot_results(
     plt.show()
 
 
-
 def plot_sensitivity_comparison_yy(
     sens_left,
     sens_right,
     label_left="Left",
     label_right="Right",
     max_cols=4,
-    figsize_per_plot=(4, 3),
+    figsize_per_plot=(5, 3),
     suptitle=None,
 ):
     t = sens_left["t"]
@@ -744,6 +1123,9 @@ def plot_sensitivity_comparison_yy(
     )
     axes = np.array(axes).reshape(-1)
 
+    line1_ref = None
+    line2_ref = None
+
     for i, param in enumerate(params):
         ax1 = axes[i]
         ax2 = ax1.twinx()
@@ -751,92 +1133,51 @@ def plot_sensitivity_comparison_yy(
         y_left = np.asarray(sens_left[param]).squeeze()
         y_right = np.asarray(sens_right[param]).squeeze()
 
-        line1, = ax1.plot(
-            t,
-            y_left,
-            linewidth=1.5,
-            label=label_left,
-        )
-
-        line2, = ax2.plot(
-            t,
-            y_right,
-            color="red",
-            linewidth=1.5,
-            label=label_right,
-        )
-
-        ax1.set_ylabel(label_left)
-
-        ax2.set_ylabel(
-            label_right,
-            color="red",
-        )
-
-        ax2.tick_params(
-            axis="y",
-            colors="red",
-        )
-
-        ax2.spines["right"].set_color("red")
-
-        title = PARAM_LABELS.get(param, param)
-        ax1.set_title(title)
-
-        ax1.set_xlabel("Time [s]")
-        ax1.set_ylabel(label_left)
-        ax2.set_ylabel(label_right)
-
-        ax1.grid(True, alpha=0.4)
+        line1, = ax1.plot(t, y_left, linewidth=2.0)
+        line2, = ax2.plot(t, y_right, color="red", linewidth=2.0)
 
         if i == 0:
-            ax1.legend([line1, line2], [label_left, label_right], loc="best")
+            line1_ref, line2_ref = line1, line2
+
+        ax1.set_ylabel(label_left, fontsize=13)
+        ax2.set_ylabel(label_right, color="red", fontsize=13)
+        ax2.tick_params(axis="y", colors="red", labelsize=12)
+        ax1.tick_params(axis="both", labelsize=12)
+        ax2.spines["right"].set_color("red")
+
+        ax1.set_title(PARAM_LABELS.get(param, param), fontsize=15)
+        ax1.set_xlabel("Time [s]", fontsize=13)
+        ax1.grid(True, alpha=0.4)
 
     for j in range(i + 1, len(axes)):
         axes[j].axis("off")
 
-    if suptitle is not None:
-        fig.suptitle(suptitle)
-        plt.tight_layout(rect=[0, 0, 1, 0.96])
-    else:
-        plt.tight_layout()
+    # legend를 figure 왼쪽 위 (suptitle 라인 왼쪽)로
+    fig.legend(
+        [line1_ref, line2_ref],
+        [label_left, label_right],
+        loc="upper left",
+        bbox_to_anchor=(0.0, 1.0),
+        fontsize=14,
+        frameon=True,
+    )
 
+    if suptitle is not None:
+        fig.suptitle(suptitle, fontsize=17)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
     plt.show()
 
 
 
-# ============================================================
-# Parameter display labels
-# ============================================================
-PARAM_LABELS = {
-    "Negative electrode exchange-current density [A.m-2]": r"$k^-$",
-    "Positive electrode exchange-current density [A.m-2]": r"$k^+$",
 
-    "Negative electrode double-layer capacity [F.m-2]": r"$C_{dl}^-$",
-    "Positive electrode double-layer capacity [F.m-2]": r"$C_{dl}^+$",
 
-    "Negative electrode active material volume fraction": r"$\varepsilon_s^-$",
-    "Positive electrode active material volume fraction": r"$\varepsilon_s^+$",
 
-    "Cation transference number": r"$t^+$",
 
-    "Electrolyte conductivity [S.m-1]": r"$\kappa$",
-    "Electrolyte diffusivity [m2.s-1]": r"$D_e$",
 
-    "Positive electrode porosity": r"$\varepsilon_e^+$",
-    "Negative electrode porosity": r"$\varepsilon_e^-$",
-    "Separator porosity": r"$\varepsilon_e^{sep}$",
 
-    "Negative electrode thickness [m]": r"$L^-$",
-    "Positive electrode thickness [m]": r"$L^+$",
-    "Separator thickness [m]": r"$L^{sep}$",
 
-    "Negative particle diffusivity [m2.s-1]": r"$D_s^-$",
-    "Positive particle diffusivity [m2.s-1]": r"$D_s^+$",
 
-    "Negative electrode conductivity [S.m-1]": r"$\sigma^-$",
-    "Positive electrode conductivity [S.m-1]": r"$\sigma^+$",
 
-    "Negative particle radius [m]": r"$R_s^-$",
-    "Positive particle radius [m]": r"$R_s^+$",
-}
+
+################################################################
