@@ -92,21 +92,6 @@ def set_init_concentration(param, soc):
     return param
 
 
-def get_soc_endpoints(param):
-
-    soc2theta_n, soc2theta_p = build_soc2theta(param)
-
-    c_n_max = param["Maximum concentration in negative electrode [mol.m-3]"]
-    c_p_max = param["Maximum concentration in positive electrode [mol.m-3]"]
-
-    return {
-        "csn_at_soc100": float(soc2theta_n(1.0) * c_n_max),
-        "csp_at_soc100": float(soc2theta_p(1.0) * c_p_max),
-
-        "csn_at_soc0": float(soc2theta_n(0.0) * c_n_max),
-        "csp_at_soc0": float(soc2theta_p(0.0) * c_p_max),
-    }
-
 # How to use:
 # parameter_values = parameter_values.copy()
 
@@ -261,9 +246,42 @@ def make_experiment(profile_id) -> pybamm.Experiment:
             "Rest for 600 seconds",
         )]
 
+    elif profile_id == "C3_dchg":
+        steps = [(
+            "Rest for 10 seconds",
+            "Discharge at C/3 for 1080 seconds",
+            "Rest for 600 seconds",
+        )]
+
+    elif profile_id == "1C_dchg":
+        steps = [(
+            "Rest for 10 seconds",
+            "Discharge at 1C for 360 seconds",
+            "Rest for 600 seconds",
+        )]
+
+    elif profile_id == "2C_dchg":
+        steps = [(
+            "Rest for 10 seconds",
+            "Discharge at 2C for 180 seconds",
+            "Rest for 600 seconds",
+        )]
+
+    elif profile_id == "5C_dchg":
+        steps = [(
+            "Rest for 10 seconds",
+            "Discharge at 5C for 72 seconds",
+            "Rest for 600 seconds",
+        )]
+
     elif profile_id == "C50_dchg":
         steps = [(
             "Discharge at C/50 until 2.5 V",
+        )]
+
+    elif profile_id == "3C_dchg":
+        steps = [(
+            "Discharge at 3C until 2.5 V",
         )]
 
     elif profile_id in PROFILE_CSV_MAP:
@@ -309,7 +327,12 @@ def run_model(
     Run a PyBaMM simulation and return the solution.
     """
     if solver is None:
-        solver = pybamm.IDAKLUSolver()
+        # max_num_steps caps the integrator's internal steps per output point.
+        # A healthy solve uses far fewer; a pathologically stiff parameter set
+        # (the optimizer can wander into one) would otherwise take ever-smaller
+        # steps and hang forever. With the cap it raises instead -> callers'
+        # try/except turns it into a fit penalty rather than a stuck worker.
+        solver = pybamm.IDAKLUSolver(options={"max_num_steps": 50000})
 
     sim = pybamm.Simulation(
         model,
@@ -486,6 +509,134 @@ def j0_pos_nominal(c_e, c_s_surf, c_s_max, T):
 
 
 
+# Standard Chen2020 graphite OCP, captured once for the shifted variant below.
+_GRAPHITE_OCP_CHEN2020 = pybamm.ParameterValues("Chen2020")[
+    "Negative electrode OCP [V]"
+]
+
+
+def ocp_n_discrepancy(sto):
+    """Chen2020 graphite (anode) OCP_n with a small, SOC-localized POSITIVE bias.
+
+    Adds a Gaussian bump on top of the standard Chen2020 graphite OCP:
+        - `peak`  mV up at `center`
+        - `floor` mV up at the edges
+    NOTE: `center`/`width` are in graphite STOICHIOMETRY, not cell SOC.
+
+    Use as the 'true' OCP_n for a reference model while your model keeps the
+    unshifted Chen2020 OCP -> study OCP-mismatch (structural model error).
+    Set via:  params["Negative electrode OCP [V]"] = ocp_n_discrepancy
+    """
+    U = _GRAPHITE_OCP_CHEN2020(sto)
+
+    peak = 3e-3     # +15 mV at center
+    floor = 2e-3     # +10 mV at edges
+    center = 0.50    # graphite stoichiometry (NOT cell SOC)
+    width = 0.18
+
+    bump = pybamm.exp(-((sto - center) ** 2) / (2 * width ** 2))
+    dU = floor + (peak - floor) * bump   # positive bias, added to anode OCP
+    return U + dU
+
+
+def Dsn_discrepancy(c_s, T):
+    """Discrepancy: concentration-dependent NEGATIVE particle diffusivity.
+
+    Physically realistic: D DECREASES as the particle fills (higher c_s), like
+    the electrolyte. Truth uses this; the fit uses a constant Ds- and cannot
+    reproduce the shape -> structural mismatch.
+    D0 = nominal Ds-; with offset 0.9, D == D0 at sto=0.9. Ranges
+    ~7.94*D0 (empty, sto=0) .. 0.79*D0 (full, sto=1): 10x swing.
+    """
+    D0 = 3.3e-14
+    cmax = 33133.0          # Chen2020 negative max concentration [mol.m-3]
+    sto = c_s / cmax
+    return D0 * 10 ** (0.9 - sto)   # D0 at sto=0.9; 7.94*D0 (empty) .. 0.79*D0 (full): 10x swing
+
+
+def Dsp_discrepancy(c_s, T):
+    """Discrepancy: concentration-dependent POSITIVE particle diffusivity.
+
+    D DECREASES as the particle fills (higher c_s). For the cathode, "full"
+    is at cell SOC 0% (lithiated), so D is low there and high near SOC 100%.
+    D0 = nominal Ds+; with offset 0.85, D == D0 at sto=0.85. Ranges
+    ~7.08*D0 (empty, sto=0) .. 0.71*D0 (full, sto=1): 10x swing.
+    """
+    D0 = 4.0e-15
+    cmax = 63104.0
+    sto = c_s / cmax
+    return D0 * 10 ** (1.72 * (0.85 - sto))   # window 0.27~0.85 안에서 10x
+
+
+# Named RC-overpotential discrepancy branches (lumped dynamics SPMe lacks).
+# Each branch is a saturating parallel-RC driven by current:
+#   R     = V_max / I_REF   -> steady drop at the reference (1C) current
+#   tau   = R * C           -> relaxation time constant
+#   v_max -> HARD cap on |V_rc| so a high C-rate doesn't push the branch past
+#            its intended magnitude (binds only when |I| > I_REF).
+# Toggle each independently in DISC: "rc_short" and/or "rc_long".
+RC_I_REF = 5.0   # reference current [A] (~1C for the LGM50 cell) used to size R
+RC_SPECS = {
+    # rc_short: 5 mV @ 5 A -> R=1 mOhm, tau=30 s, capped at 5 mV
+    "rc_short": dict(R=5.0e-3 / RC_I_REF, tau=30.0,  v_max=5.0e-3),
+    # rc_long: 20 mV @ 5 A -> R=4 mOhm, tau=300 s, capped at 20 mV
+    "rc_long":  dict(R=20.0e-3 / RC_I_REF, tau=300.0, v_max=20.0e-3),
+}
+
+
+def Vrc_discrepancy(t, I, branches):
+    """Lumped RC-overpotential discrepancy: extra relaxation dynamics SPMe lacks.
+
+    Sums one or more (optionally saturating) parallel-RC branches driven by the
+    cell current I(t):
+        tau * dV_rc/dt + V_rc = R * I,     tau = R*C
+    Exact zero-order-hold update (stable on PyBaMM's non-uniform t grid):
+        a = exp(-dt_k / tau);   V[k] = a*V[k-1] + R*(1-a)*I[k]
+    with V[0] = 0 (relaxed start), then clamped to |V| <= v_max if given.
+
+    Usage (truth-side only; the fit stays the clean SPMe):
+        sol  = run_model(...)                       # SPMe truth
+        t, I = sol["Time [s]"].entries, sol["Current [A]"].entries
+        V_truth = sol["Voltage [V]"].entries - Vrc_discrepancy(t, I, branches)
+    NOTE the MINUS: PyBaMM current is +ve on discharge and an overpotential
+    LOWERS terminal voltage, so V_rc is subtracted (it is >=0 while I>0).
+
+    Parameters
+    ----------
+    t, I     : (N,) arrays   time [s] and current [A] from the SPMe solution
+    branches : list of branch specs, each either
+                 dict(R=.., tau=.., v_max=..)   (v_max optional), or
+                 a tuple (R, tau) / (R, tau, v_max).
+               Pass e.g. [RC_SPECS["rc_short"], RC_SPECS["rc_long"]].
+
+    Returns
+    -------
+    (N,) array  V_rc(t) [V] = sum over branches
+    """
+    t = np.asarray(t, dtype=float)
+    I = np.asarray(I, dtype=float)
+    n = t.shape[0]
+    dt = np.diff(t)
+    V_rc = np.zeros(n)
+    for br in branches:
+        if isinstance(br, dict):
+            R, tau, v_max = br["R"], br["tau"], br.get("v_max")
+        elif len(br) == 3:
+            R, tau, v_max = br
+        else:
+            (R, tau), v_max = br, None
+        v = 0.0
+        branch = np.zeros(n)
+        for k in range(1, n):
+            a = np.exp(-dt[k - 1] / tau)
+            v = a * v + R * (1.0 - a) * I[k]
+            if v_max is not None:
+                v = max(-v_max, min(v_max, v))   # saturate |V_rc| <= v_max
+            branch[k] = v
+        V_rc += branch
+    return V_rc
+
+
 # ============================================================
 # Modified Parameter Functions for Sensitivity
 # ============================================================
@@ -563,6 +714,135 @@ def prepare_sensitivity_inputs(params, sensitivity_targets, values=None):
             theta_values[name] = values[name]
 
     return sensitivity_params, theta_values
+
+
+
+def residual_sensitivity_decomposition(
+    r,
+    S,
+    sigma=None,
+    t=None,
+    labels=None,
+    plot=False,
+    rtol=1e-6,
+):
+    """Split a fit residual into the part inside the sensitivity span (which
+    parameters COULD reduce) and the orthogonal part (which NO parameter can
+    reduce -> the model-discrepancy fingerprint).
+
+        r_parallel = U_k U_kᵀ r    (U_k = left singular vectors of S above rtol)
+        r_perp     = r - r_parallel
+
+    Uses an SVD with a rank tolerance so near-degenerate (collinear) sensitivity
+    columns don't blow up the projection -- the QR version is unreliable when
+    cond(S) is large.
+
+    How to read the output (at a CONVERGED least-squares fit):
+      * Optimality is Sᵀr = 0, so RMS(r_parallel) ~ 0 by construction.
+        -> RMS(r_parallel) NOT ~0  => not converged, or a parameter hit a bound.
+      * RMS(r_perp) vs the noise floor is the real signal:
+        -> RMS(r_perp) >> noise     => structural lack of fit (discrepancy).
+      * the SHAPE of r_perp(t) is the discrepancy a model #2 must represent.
+      * rank < #params => some columns are collinear (not separately
+        identifiable); those directions are dropped from the projection.
+
+    All magnitudes are reported as RMS in mV (= L2 norm / sqrt(N)), matching RMSE.
+
+    Parameters
+    ----------
+    r : (N,) array           residual, V_true - V_fit  [V]
+    S : (N, p) array         sensitivity matrix dV/dtheta (one column per param)
+    sigma : float/(N,) or None  measurement noise std; weights the projection so
+                                orthogonality matches the least-squares objective
+                                (uniform sigma -> identical to unweighted)
+    t : (N,) or None         time vector (x-axis for the plot)
+    labels : list or None    parameter names (only used in the printout)
+    plot : bool              overlay r, r_parallel, r_perp [mV] if True
+    rtol : float             singular values below rtol*max are treated as zero
+                             (drops collinear directions); default 1e-6
+
+    Returns
+    -------
+    dict: r_parallel, r_perp, rms_r, rms_parallel, rms_perp, frac_parallel,
+          frac_perp, rank, n_params, cond_S, singular_values
+    """
+    r = np.asarray(r, dtype=float).reshape(-1)
+    S = np.asarray(S, dtype=float)
+    N = r.shape[0]
+    if S.ndim != 2 or S.shape[0] != N:
+        raise ValueError(f"S must be (N, p) matching r (N={N}); got {S.shape}")
+    n_params = S.shape[1]
+
+    # weight into the space where least-squares optimality (Sᵀr=0) holds
+    if sigma is None:
+        w = np.ones_like(r)
+    else:
+        w = 1.0 / np.broadcast_to(np.asarray(sigma, dtype=float), r.shape)
+
+    rw = r * w
+    Sw = S * w[:, None]
+
+    # SVD-based projection, robust to near-degenerate columns
+    U, svals, _ = np.linalg.svd(Sw, full_matrices=False)
+    smax = svals[0] if svals.size else 0.0
+    keep = svals > rtol * smax
+    rank = int(keep.sum())
+    Uk = U[:, keep]
+
+    r_par_w = Uk @ (Uk.T @ rw) if rank else np.zeros_like(rw)
+    r_perp_w = rw - r_par_w
+
+    # back to volts (components still sum to r)
+    r_parallel = r_par_w / w
+    r_perp = r_perp_w / w
+
+    def rms(v):
+        return float(np.sqrt(np.mean(v ** 2)))
+
+    rms_r = rms(r)
+    cond_S = float(smax / svals[-1]) if svals[-1] > 0 else np.inf
+    out = {
+        "r_parallel": r_parallel,
+        "r_perp": r_perp,
+        "rms_r": rms_r,
+        "rms_parallel": rms(r_parallel),
+        "rms_perp": rms(r_perp),
+        "frac_parallel": rms(r_parallel) / rms_r if rms_r else 0.0,
+        "frac_perp": rms(r_perp) / rms_r if rms_r else 0.0,
+        "rank": rank,
+        "n_params": n_params,
+        "cond_S": cond_S,
+        "singular_values": svals,
+    }
+
+    print("residual sensitivity decomposition"
+          + (f"  (params: {labels})" if labels else ""))
+    print(f"  RMS r        = {out['rms_r'] * 1e3:.4f} mV")
+    print(f"  RMS r_par    = {out['rms_parallel'] * 1e3:.4f} mV"
+          f"   (fraction {out['frac_parallel']:.3f}) -> ~0 if converged")
+    print(f"  RMS r_perp   = {out['rms_perp'] * 1e3:.4f} mV"
+          f"   (fraction {out['frac_perp']:.3f}) -> discrepancy if >> noise")
+    print(f"  rank(S)      = {rank}/{n_params}"
+          f"   (rtol={rtol:g}; full cond(S)={cond_S:.2e})")
+    if rank < n_params:
+        print(f"  NOTE: {n_params - rank} collinear direction(s) dropped "
+              f"-> those params are not separately identifiable")
+
+    if plot:
+        import matplotlib.pyplot as plt
+        x = t if t is not None else np.arange(N)
+        plt.figure(figsize=(10, 4))
+        plt.plot(x, r * 1e3, label="residual", lw=1.0)
+        plt.plot(x, r_parallel * 1e3, label="parallel (reducible)", lw=1.0)
+        plt.plot(x, r_perp * 1e3, label="orthogonal (discrepancy)", lw=1.2)
+        plt.axhline(0, color="k", lw=0.4)
+        plt.xlabel("Time [s]" if t is not None else "index")
+        plt.ylabel("mV")
+        plt.legend()
+        plt.tight_layout()
+        plt.show()
+
+    return out
 
 
 
